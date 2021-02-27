@@ -1,2 +1,2 @@
 # isitblocked
- Small hosts file tester.
+Automated hosts file tester created just for fun :)
