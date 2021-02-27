@@ -1,0 +1,104 @@
+#!/bin/bash
+
+URL="$@"
+
+if [ "$#" -eq 0 ] ; then
+  echo "Error: No argument supplied."
+else
+  if [ $(echo $URL | grep -P "^https?://.*?/") ]
+  then
+    echo " "
+    printf "Attempting to download the DNSBL..."
+    TMPFILE=$(mktemp /tmp/isitblocked-XXXXX)
+    curl -X GET "$@" -o $TMPFILE &> /dev/null
+    exitCode=$(echo "$?")
+
+    if [ $exitCode -ne 0 ]
+    then
+      echo -e "\033[1mError: CURL exit code: $exitCode\033[0m"
+    else
+      printf "done.\n"
+      TMPFILE2=$(mktemp /tmp/isitblocked-XXXXX)
+
+      # Try to ensure only domains remain in the hosts file.
+      printf "Removing all non-domain elements..."
+      cat $TMPFILE | grep -Pv "#.*|\!.*" > $TMPFILE2
+      cat $TMPFILE2 | grep -Po "[](\.|\-)[\w]+$" |
+      grep -Pv "^\w+$" > $TMPFILE
+      sleep 1
+      printf "done.\n"
+      echo > $TMPFILE2
+
+      # Calculate initial number of domains.
+      domains=$(wc -l $TMPFILE | grep -Po '^\d+')
+
+      # iterate through the file, dig, remove blocked / NX domains.
+      printf "Querying DNS and removing blocked domains..."
+      while IFS= read -r line; do
+        result=$(dig $line)
+        null=$(grep -o 0.0.0.0 <<< $result)
+        ten=$(grep -o 10.10.10.1 <<< $result)
+        nxdomain=$(grep -o NXDOMAIN <<< $result)
+
+        if [[ -n $null ]] || [[ -n $ten ]] || [[ -n $nxdomain ]]
+        then
+          sed -i "${counter}s/.*//" $TMPFILE
+        else
+          echo $line >> $TMPFILE2
+        fi
+        counter=$((counter+1))
+
+      done < $TMPFILE
+      printf "done.\n"
+    fi
+    domainsAfter=$(wc -l $TMPFILE2 | grep -Po '^\d+')
+    percentBlocked=$(awk -v t1="$domains" -v t2="$domainsAfter" 'BEGIN{printf "%.0f\n", (t2-t1)/t1 * 100}' | grep -Po '\d+')
+
+    if [[ "$domainsAfter" -ne 0 ]]
+    then
+      echo " "
+      echo "************[ Remaining domains ]************"
+      echo "*****[ Showing up to first ten domains ]*****"
+      echo "******************[ BEGIN ]******************"
+      head -10 $TMPFILE2
+      [[ $domainsAfter -gt 10 ]] && printf ".\n.\n.\n"
+      echo " "
+      echo "*******************[ END ]*******************"
+
+      echo -e "\033[1mTotal blocked: $percentBlocked%\033[0m"
+      echo " "
+      printf "Save the file to desktop [Y/n]? "
+      read choice
+
+      if [ "$choice" == 'y' ] || [ "$choice" == 'Y' ]
+      then
+        # Save file and open once done.
+        FILEDIR=~/Desktop
+        sum=$(md5sum $TMPFILE2 | grep -Po "^\w+")
+        printf "Creating ISB-$sum.txt in $FILEDIR..."
+        newFile=$FILEDIR/ISB-$sum.txt
+        touch $newFile
+
+        exitCode=$(echo $?)
+        if [ $exitCode != 0 ]; then
+          echo " "
+          echo "Error: couldn't create file, exit code: $exitCode."
+        else
+          cat $TMPFILE2 > $newFile
+          sleep 0.5
+          printf "done.\n"
+          echo "Opening file..."
+          echo " "
+          xdg-open $newFile
+        fi
+      fi
+    else
+      echo -e "\033[1mTotal blocked: $percentBlocked%\033[0m"
+      echo " "
+    fi
+    rm $TMPFILE2
+    rm $TMPFILE
+  else
+    echo "Error: Bad URL, format: 'http(s)://example.com/...'"
+  fi
+fi
